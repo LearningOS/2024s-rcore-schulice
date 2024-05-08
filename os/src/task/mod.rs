@@ -14,9 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -54,6 +55,8 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_init_time_ms: None,
+            task_syscall_times: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -80,6 +83,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        // initialize time
+        task0.task_init_time_ms = Some(get_time_ms());
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -125,6 +130,10 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            // initialize the first sheduled time
+            if inner.tasks[next].task_init_time_ms.is_none() {
+                inner.tasks[next].task_init_time_ms = Some(get_time_ms());
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -135,6 +144,28 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn update_current_syscall_times(&self, syscall_id: usize) {
+        assert!(syscall_id < MAX_SYSCALL_NUM);
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_times[syscall_id] += 1;
+    }
+
+    /// do not need to get error reason, so use option
+    fn current_initalized_time(&self) -> Option<usize> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.tasks[inner.current_task];
+        assert!(current.task_status == TaskStatus::Running);
+        current.task_init_time_ms
+    }
+
+    fn current_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.tasks[inner.current_task];
+        current.task_syscall_times
+    }
+
 }
 
 /// Run the first task in task list.
@@ -168,4 +199,19 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Update current task syscall times
+pub fn update_current_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.update_current_syscall_times(syscall_id);
+}
+
+/// get current initalized time
+pub fn current_initalized_time() -> Option<usize> {
+    TASK_MANAGER.current_initalized_time()
+}
+
+/// get syscall times buttom
+pub fn current_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.current_syscall_times()
 }
