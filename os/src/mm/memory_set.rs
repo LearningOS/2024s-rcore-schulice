@@ -300,6 +300,53 @@ impl MemorySet {
             false
         }
     }
+
+    /// map
+    pub fn map(&mut self, start: VirtAddr, end: VirtAddr, perm: MapPermission) -> bool {
+        if self
+            .areas
+            .iter()
+            .any(|area| 
+                area.vpn_range.get_start() <= start.floor() 
+                    && area.vpn_range.get_end() > start.floor()
+                || area.vpn_range.get_end() >= end.ceil() 
+                    && area.vpn_range.get_start() < end.ceil()
+            ) 
+        {
+            false
+        } else {
+            let mut new_area =  MapArea::new(start, end, MapType::Framed, perm); 
+            new_area.map(&mut self.page_table);
+            self.areas.push(new_area);
+            true
+        }
+    }
+
+    /// munmap
+    pub fn munmap(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
+        if let Some((idx, area)) = self
+            .areas
+            .iter_mut()
+            .enumerate()
+            .find(|(_, area)| area.vpn_range.get_start() == start.floor() && area.vpn_range.get_end() == end.ceil())
+        {
+            for vpn in VPNRange::new(start.floor(), end.ceil()) {
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+            self.areas.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// print debug
+    pub fn print(&self) {
+        println!("[mapareainfo]");
+        for area in &self.areas {
+            println!("area_l: {:?} area_r: {:?}", area.vpn_range.get_start(), area.vpn_range.get_end());
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
