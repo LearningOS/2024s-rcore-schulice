@@ -1,9 +1,10 @@
 //! Types related to task management & Functions for completely changing TCB
+use super::manager::Stride;
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -71,6 +72,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The first running time
+    pub first_time_ms: Option<usize>,
+
+    /// The syscall times
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// The stride, use for stride shedule
+    pub stride: Stride,
+
+    /// The priority, use for stride shedule, >= 2
+    pub priority: usize,
 }
 
 impl TaskControlBlockInner {
@@ -135,6 +148,10 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    first_time_ms: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    stride: Stride::new(),
+                    priority: 16,
                 })
             },
         };
@@ -216,6 +233,10 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    first_time_ms: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    stride: Stride::new(),
+                    priority: 16,
                 })
             },
         });
@@ -260,6 +281,96 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Add syscall times record in tcb, use for syscall task info
+    pub fn add_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access(); 
+        inner.syscall_times[syscall_id] += 1;
+    } 
+
+    /// get syscall times record
+    pub fn syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        inner.syscall_times
+    }
+
+    /// get the time for task firstly be scheduled
+    pub fn first_time_ms(&self) -> Option<usize> {
+        let inner = self.inner.exclusive_access();
+        inner.first_time_ms
+    }
+
+    /// mmap 
+    pub fn mmap(&self, start: VirtAddr, end: VirtAddr, perm: MapPermission) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        inner.memory_set.map(start, end, perm)
+    }
+    /// munmap
+    pub fn munmap(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        inner.memory_set.unmap(start, end)
+    }
+
+    /// spawn
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        let mut parent_inner = self.inner_exclusive_access();
+        // copy fd table
+        let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+        for fd in parent_inner.fd_table.iter() {
+            if let Some(file) = fd {
+                new_fd_table.push(Some(file.clone()));
+            } else {
+                new_fd_table.push(None);
+            }
+        }
+        let child_tcb = Arc::new( TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new( TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    fd_table: new_fd_table,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    first_time_ms: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    stride: Stride::new(),
+                    priority: 16,
+                })
+            },
+        });
+        parent_inner.children.push(child_tcb.clone());
+        let trap_cx = child_tcb.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp, 
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top, 
+            trap_handler as usize
+        );
+        child_tcb
+    }
+
+    /// set priority
+    pub fn set_priority(&self, priority: usize) {
+        self.inner.exclusive_access().priority = priority;
     }
 }
 
