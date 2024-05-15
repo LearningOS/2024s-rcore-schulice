@@ -1,14 +1,16 @@
 //! Process management syscalls
+use core::{ops::BitOr, slice};
+
 use alloc::sync::Arc;
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, TaskStatus,
-    },
+    }, timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -155,12 +157,13 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    if let Some(current_first) = current_first_time() {
+    let current_task = current_task().unwrap();
+    if let Some(current_first) = current_task.first_time_ms() {
         let time = get_time_ms();
         if current_first <= time {
             let res = TaskInfo {
                 status: TaskStatus::Running,
-                syscall_times: current_syscall_times(),
+                syscall_times: current_task.syscall_times(),
                 time: time - current_first,
             };
             unsafe { write_to_user_space(_ti, &res) };
@@ -179,18 +182,20 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     if _start % PAGE_SIZE != 0 {
         return -1;
     }
-    if _prot & !0x7 != 0 || _prot & 0x7 == 0 {
+    if _port & !0x7 != 0 || _port & 0x7 == 0 {
         return -1;
     }
-    let perm =  MapPermission::from_bits((_prot << 1) as u8)
+    let perm =  MapPermission::from_bits((_port << 1) as u8)
         .unwrap()
         .bitor(MapPermission::U);
-    if current_mmap(VirtAddr::from(_start),VirtAddr::from( _start + _len), perm) {
+    // change to map
+    if current_task()
+        .unwrap()
+        .mmap(VirtAddr::from(_start),VirtAddr::from( _start + _len), perm) {
         0
     } else {
         -1
     }
-    -1
 }
 
 /// YOUR JOB: Implement munmap.
@@ -202,7 +207,9 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     if _start % PAGE_SIZE != 0 {
         return -1;
     }
-    if current_munmap(VirtAddr::from(_start), VirtAddr::from(_start+_len)) {
+    if current_task()
+        .unwrap()
+        .munmap(VirtAddr::from(_start), VirtAddr::from(_start+_len)) {
         0
     } else {
         -1
@@ -226,7 +233,17 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let current_task = current_task().unwrap();
+        let new_task = current_task.spawn(data);
+        let cpid = new_task.pid.0;
+        add_task(new_task);
+        cpid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
@@ -235,5 +252,9 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    current_task().unwrap().set_priority(_prio as usize);
+    0
 }

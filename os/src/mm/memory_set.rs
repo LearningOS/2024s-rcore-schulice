@@ -323,7 +323,7 @@ impl MemorySet {
     }
 
     /// munmap
-    pub fn munmap(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
+    pub fn unmap(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
         if let Some((idx, area)) = self
             .areas
             .iter_mut()
