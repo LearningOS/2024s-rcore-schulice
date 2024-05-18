@@ -46,6 +46,7 @@ pub fn sys_yield() -> isize {
 
 pub fn sys_getpid() -> isize {
     trace!("kernel: sys_getpid pid:{}", current_task().unwrap().pid.0);
+    print!("start get pid");
     current_task().unwrap().pid.0 as isize
 }
 
@@ -117,9 +118,9 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 }
 
 /// # Safty
-/// ptr is valid
-unsafe fn write_to_user_space<T>(ptr: *mut T, val: &T) {
-    let dst = translated_byte_buffer(current_user_token(), ptr as *mut u8, core::mem::size_of::<T>());
+/// ptr is valid, token should not borrow inner twice
+pub unsafe fn write_to_user_space<T>(ptr: *mut T, val: &T, token: usize) {
+    let dst = translated_byte_buffer(token, ptr as *mut u8, core::mem::size_of::<T>());
     let src =  unsafe { slice::from_raw_parts((val as *const T) as *const u8, core::mem::size_of::<T>())}; 
     {
         let mut start = 0;
@@ -143,7 +144,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         sec: us / 1_000_000,
         usec: us % 1_000_000,
     };
-    unsafe { write_to_user_space(_ts, &time) };
+    unsafe { write_to_user_space(_ts, &time, current_user_token()) };
     0
 }
 
@@ -164,7 +165,7 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
                 syscall_times: current_task.syscall_times(),
                 time: time - current_first,
             };
-            unsafe { write_to_user_space(_ti, &res) };
+            unsafe { write_to_user_space(_ti, &res, current_task.get_user_token()) };
             return 0;
         }
     }
@@ -238,6 +239,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         let task = current_task().unwrap();
         let new_task = task.spawn(all_data.as_slice());
         let cpid = new_task.pid.0;
+        add_task(new_task);
         cpid as isize
     } else {
         -1

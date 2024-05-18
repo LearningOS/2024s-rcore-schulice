@@ -39,6 +39,12 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    fn nlink(&self) -> u32 {
+        unimplemented!("get nlinks from stdin");
+    }
+    fn fstat(&self) -> super::Stat {
+        unimplemented!("get fstat from stdin");
+    }
 }
 
 impl File for Stdout {
@@ -57,4 +63,11 @@ impl File for Stdout {
         }
         user_buf.len()
     }
+    fn nlink(&self) -> u32 {
+        unimplemented!("get nlinks from stdout");
+    }
+    fn fstat(&self) -> super::Stat {
+        unimplemented!("get fstat from stdout");
+    }
 }
+

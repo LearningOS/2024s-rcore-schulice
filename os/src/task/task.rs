@@ -339,7 +339,7 @@ impl TaskControlBlock {
             inner: unsafe {
                 UPSafeCell::new( TaskControlBlockInner {
                     trap_cx_ppn,
-                    base_size: user_sp,
+                    base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
                     memory_set,
@@ -357,14 +357,15 @@ impl TaskControlBlock {
             },
         });
         parent_inner.children.push(child_tcb.clone());
-        let trap_cx = child_tcb.inner_exclusive_access().get_trap_cx();
-        *trap_cx = TrapContext::app_init_context(
+        let inner = child_tcb.inner_exclusive_access();
+        *inner.get_trap_cx() = TrapContext::app_init_context(
             entry_point,
             user_sp, 
             KERNEL_SPACE.exclusive_access().token(),
             kernel_stack_top, 
             trap_handler as usize
         );
+        drop(inner);
         child_tcb
     }
 
