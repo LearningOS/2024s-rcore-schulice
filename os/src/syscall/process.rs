@@ -1,13 +1,15 @@
+use core::mem;
+
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str},
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags, TaskStatus,
-    },
+    }, timer::get_time,
 };
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{slice, string::String, sync::Arc, vec::Vec};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -164,10 +166,22 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let time = get_time();
+    let timeval = TimeVal {
+        sec: time / 1_000_000,
+        usec: time % 1_000_000,
+    };
+    let dst = translated_byte_buffer(current_user_token(), _ts as *const TimeVal as *const u8, mem::size_of::<TimeVal>());
+    let src = unsafe { slice::from_raw_parts(&timeval as *const _ as *const u8, mem::size_of::<TimeVal>()) };
+    let mut offset = 0;
+    for i in dst {
+        i.copy_from_slice(&src[offset..offset+i.len()]);
+        offset += i.len();
+    }
+    0
 }
 
 /// task_info syscall
