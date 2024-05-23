@@ -198,8 +198,15 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     if process_inner.deadlock_detect {
-        let mut detector_inner = process_inner.semaphore_detector.inner_exclusive_access();
+        let tid = current_task()
+            .unwrap()
+            .inner_exclusive_access()
+            .res
+            .as_ref()
+            .unwrap()
+            .tid;     let mut detector_inner = process_inner.semaphore_detector.inner_exclusive_access();
         detector_inner.aval[sem_id] += 1;
+        detector_inner.alloc[sem_id][tid] -= 1;
     }
     drop(process_inner);
     sem.up();
